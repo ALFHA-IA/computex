@@ -1,9 +1,12 @@
-# app.py
+# -*- coding: utf-8 -*-
 import pandas as pd
 import json
 import re
 from flask import Flask, request, jsonify, render_template_string
 from rapidfuzz import fuzz
+
+# No longer need to import the 'locale' library since we are not using the system locale
+# import locale
 
 ARCHIVO = 'Lista_Ventas_Detalle.csv'
 app = Flask(__name__)
@@ -16,7 +19,7 @@ def cargar_y_procesar():
         'articulos', 'dato_extra', 'cantidad', 'importe', 'tc',
         'importe_soles', 'vendedor'
     ]
-    df = pd.read_csv(ARCHIVO, skiprows=2, names=cols)
+    df = pd.read_csv(ARCHIVO, skiprows=2, names=cols, encoding='latin1')
     df['fecha'] = pd.to_datetime(df['fecha'], dayfirst=True, errors='coerce')
     df['cantidad'] = pd.to_numeric(df['cantidad'], errors='coerce')
     df = df.dropna(subset=['fecha', 'articulos'])
@@ -105,7 +108,15 @@ def cargar_y_procesar():
 
     df['marca'] = df.apply(lambda r: detectar_marca(r['categoria'], r['articulos_clean']), axis=1)
 
-    df['mes_nombre'] = df['fecha'].dt.month_name(locale='es') + ' ' + df['fecha'].dt.year.astype(str)
+    # Diccionario para mapear números de mes a nombres en español, evitando el error de 'locale'
+    meses_espanol = {
+        1: 'Enero', 2: 'Febrero', 3: 'Marzo', 4: 'Abril', 5: 'Mayo', 6: 'Junio',
+        7: 'Julio', 8: 'Agosto', 9: 'Septiembre', 10: 'Octubre', 11: 'Noviembre', 12: 'Diciembre'
+    }
+
+    # Usar el mapeo manual para crear la columna de mes, corrigiendo el error de 'locale'
+    df['mes_nombre'] = df['fecha'].dt.month.map(meses_espanol) + ' ' + df['fecha'].dt.year.astype(str)
+    
     df['mes_orden'] = df['fecha'].dt.to_period('M')
 
     frecuencia = df.groupby(['articulos_clean','mes_nombre','mes_orden','categoria','marca']).size().reset_index(name='frecuencia')
@@ -146,6 +157,36 @@ def index():
     #chart { flex:1; background:white; padding:15px; border-radius:8px; }
     .info { background:#eef3f6; padding:8px; border-radius:6px; margin-top:10px; font-size:0.9rem; }
     button { margin-top:10px; width: 100%; padding: 10px; font-size: 1rem; cursor:pointer;}
+    
+    /* Estilos para el modal personalizado */
+    .modal {
+        display: none;
+        position: fixed;
+        z-index: 100;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        overflow: auto;
+        background-color: rgba(0,0,0,0.4);
+    }
+    .modal-content {
+        background-color: #fefefe;
+        margin: 15% auto;
+        padding: 20px;
+        border: 1px solid #888;
+        width: 80%;
+        max-width: 400px;
+        text-align: center;
+        border-radius: 8px;
+    }
+    .modal-buttons {
+        margin-top: 20px;
+    }
+    .modal-buttons button {
+        width: 45%;
+        margin: 5px;
+    }
     </style>
     </head>
     <body>
@@ -167,10 +208,45 @@ def index():
       </div>
       <div id="chart"></div>
     </div>
+    
+    <!-- Modal personalizado -->
+    <div id="customModal" class="modal">
+      <div class="modal-content">
+        <p id="modal-message"></p>
+        <div class="modal-buttons">
+          <button id="modal-ok-btn">OK</button>
+          <button id="modal-cancel-btn" style="display:none;">Cancelar</button>
+        </div>
+      </div>
+    </div>
 
     <script>
     const DATA = {{ data | safe }};
     const ordenMeses = DATA.ordenMeses;
+    
+    // Funciones para el modal
+    function showModal(message, isConfirmation = false) {
+        const modal = document.getElementById('customModal');
+        const modalMessage = document.getElementById('modal-message');
+        const okBtn = document.getElementById('modal-ok-btn');
+        const cancelBtn = document.getElementById('modal-cancel-btn');
+
+        modalMessage.textContent = message;
+        okBtn.style.display = 'block';
+        cancelBtn.style.display = isConfirmation ? 'block' : 'none';
+        modal.style.display = 'block';
+
+        return new Promise((resolve) => {
+            okBtn.onclick = () => {
+                modal.style.display = 'none';
+                resolve(true);
+            };
+            cancelBtn.onclick = () => {
+                modal.style.display = 'none';
+                resolve(false);
+            };
+        });
+    }
 
     function llenarSelect(id, items, includeTodos = false) {
         const sel = document.getElementById(id);
@@ -300,58 +376,60 @@ def index():
     document.getElementById('product-select').addEventListener('change', function(){ showChart(this.value); });
 
     // Botón agregar producto
-    document.getElementById('add-product-btn').addEventListener('click', () => {
+    document.getElementById('add-product-btn').addEventListener('click', async () => {
         const nombre = document.getElementById('new-product-name').value.trim();
         const cat = document.getElementById('category-select').value;
         const brand = document.getElementById('brand-select').value;
         if(!nombre) {
-            alert("Ingresa el nombre del producto.");
+            showModal("Ingresa el nombre del producto.");
             return;
         }
         if(cat === "Todos" || brand === "Todos") {
-            alert("Selecciona una categoría y marca válidas para agregar.");
+            showModal("Selecciona una categoría y marca válidas para agregar.");
             return;
         }
-        fetch('/agregar_producto', {
+        
+        const response = await fetch('/agregar_producto', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({nombre, categoria: cat, marca: brand})
-        }).then(r => r.json()).then(res => {
-            if(res.ok){
-                alert("Producto agregado.");
-                location.reload();
-            } else {
-                alert("Error: " + res.error);
-            }
         });
+        const res = await response.json();
+        if(res.ok){
+            showModal("Producto agregado.").then(() => location.reload());
+        } else {
+            showModal("Error: " + res.error);
+        }
     });
 
     // Botón eliminar producto
-    document.getElementById('delete-product-btn').addEventListener('click', () => {
+    document.getElementById('delete-product-btn').addEventListener('click', async () => {
         const cat = document.getElementById('category-select').value;
         const brand = document.getElementById('brand-select').value;
         const product = document.getElementById('product-select').value;
         if(!product){
-            alert("Selecciona un producto para eliminar.");
+            showModal("Selecciona un producto para eliminar.");
             return;
         }
         if(cat === "Todos" || brand === "Todos") {
-            alert("Selecciona una categoría y marca válidas para eliminar.");
+            showModal("Selecciona una categoría y marca válidas para eliminar.");
             return;
         }
-        if(!confirm(`¿Eliminar producto "${product}"? Esta acción no se puede deshacer.`)) return;
-        fetch('/eliminar_producto', {
+
+        const confirmed = await showModal(`¿Eliminar producto "${product}"? Esta acción no se puede deshacer.`, true);
+        if (!confirmed) return;
+
+        const response = await fetch('/eliminar_producto', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({nombre: product, categoria: cat, marca: brand})
-        }).then(r => r.json()).then(res => {
-            if(res.ok){
-                alert("Producto eliminado.");
-                location.reload();
-            } else {
-                alert("Error: " + res.error);
-            }
         });
+        const res = await response.json();
+        if(res.ok){
+            showModal("Producto eliminado.").then(() => location.reload());
+        } else {
+            showModal("Error: " + res.error);
+        }
     });
 
     // Inicializar selects
